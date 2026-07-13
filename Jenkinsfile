@@ -11,6 +11,7 @@ pipeline {
         IMAGE_NAME = "ott-platform"
         DOCKERHUB_REPO = "tapasvigowda/ott-platform"
         IMAGE_TAG = "${BUILD_NUMBER}"
+
         MYSQL_DATABASE = "ott_db"
     }
 
@@ -23,9 +24,15 @@ pipeline {
             }
         }
 
-        stage('Build & Test') {
+        stage('Compile') {
             steps {
-                sh 'mvn clean verify'
+                sh 'mvn clean compile'
+            }
+        }
+
+        stage('Unit Test') {
+            steps {
+                sh 'mvn test'
             }
             post {
                 always {
@@ -41,12 +48,12 @@ pipeline {
                     withCredentials([
                         string(credentialsId: 'sonar', variable: 'SONAR_TOKEN')
                     ]) {
-                        sh """
+                        sh '''
                         mvn sonar:sonar \
                         -Dsonar.projectKey=ott-platform \
                         -Dsonar.projectName="OTT Platform" \
-                        -Dsonar.token=${SONAR_TOKEN}
-                        """
+                        -Dsonar.token=$SONAR_TOKEN
+                        '''
                     }
                 }
             }
@@ -62,7 +69,7 @@ pipeline {
 
         stage('Package') {
             steps {
-                sh 'mvn package -DskipTests'
+                sh 'mvn clean package -DskipTests'
             }
         }
 
@@ -70,7 +77,9 @@ pipeline {
             steps {
                 sh """
                 docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+
                 docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${DOCKERHUB_REPO}:${IMAGE_TAG}
+
                 docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${DOCKERHUB_REPO}:latest
                 """
             }
@@ -87,16 +96,19 @@ pipeline {
                 ]) {
                     sh '''
                     echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
                     docker push $DOCKERHUB_REPO:$IMAGE_TAG
                     docker push $DOCKERHUB_REPO:latest
+
                     docker logout
                     '''
                 }
             }
         }
 
-        stage('Deploy using Docker Compose') {
+        stage('Deploy') {
             steps {
+
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'mysql-creds',
@@ -104,15 +116,21 @@ pipeline {
                         passwordVariable: 'MYSQL_PASSWORD'
                     )
                 ]) {
-                    sh '''
-                    export MYSQL_DATABASE=ott_db
-                    export MYSQL_USER=$MYSQL_USER
-                    export MYSQL_PASSWORD=$MYSQL_PASSWORD
-                    export MYSQL_ROOT_PASSWORD=$MYSQL_PASSWORD
 
-                    docker compose down --remove-orphans || true
-                    docker compose pull
-                    docker compose up -d --force-recreate
+                    sh '''
+                    docker stop ott-platform || true
+                    docker rm ott-platform || true
+
+                    docker pull $DOCKERHUB_REPO:latest
+
+                    docker run -d \
+                      --name ott-platform \
+                      --network ott_default \
+                      -p 8082:8082 \
+                      -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/$MYSQL_DATABASE \
+                      -e SPRING_DATASOURCE_USERNAME=$MYSQL_USER \
+                      -e SPRING_DATASOURCE_PASSWORD=$MYSQL_PASSWORD \
+                      $DOCKERHUB_REPO:latest
                     '''
                 }
             }
@@ -121,12 +139,10 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh '''
-                echo "Waiting for OTT Platform..."
+                echo "Waiting for application..."
+                sleep 30
 
-                for i in {1..10}; do
-                  sleep 10
-                  curl -f http://localhost:8082/actuator/health && break
-                done
+                curl --fail http://localhost:8082/actuator/health
                 '''
             }
         }
@@ -142,14 +158,21 @@ pipeline {
     }
 
     post {
+
         success {
+            echo "===================================="
             echo "BUILD SUCCESSFUL"
-            sh 'docker ps || true'
+            echo "===================================="
+            sh 'docker ps'
         }
+
         failure {
+            echo "===================================="
             echo "BUILD FAILED"
-            sh 'docker ps -a || true'
+            echo "===================================="
+            sh 'docker ps -a'
         }
+
         always {
             cleanWs()
         }
