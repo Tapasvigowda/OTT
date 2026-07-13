@@ -9,7 +9,7 @@ pipeline {
 
     environment {
         IMAGE_NAME = "ott-platform"
-        DOCKERHUB_REPO = "Tapasvigowda/ott-platform"
+        DOCKERHUB_REPO = "tapasvigowda/ott-platform"
         IMAGE_TAG = "${BUILD_NUMBER}"
         MYSQL_DATABASE = "ott_db"
     }
