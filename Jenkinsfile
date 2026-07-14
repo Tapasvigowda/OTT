@@ -11,7 +11,6 @@ pipeline {
         IMAGE_NAME = "ott-platform"
         DOCKERHUB_REPO = "tapasvigowda/ott-platform"
         IMAGE_TAG = "${BUILD_NUMBER}"
-
         MYSQL_DATABASE = "ott_db"
     }
 
@@ -24,9 +23,9 @@ pipeline {
             }
         }
 
-        stage('Compile') {
+        stage('Build') {
             steps {
-                sh 'mvn clean compile'
+                sh 'mvn clean package -DskipTests'
             }
         }
 
@@ -36,8 +35,7 @@ pipeline {
             }
             post {
                 always {
-                    junit allowEmptyResults: true,
-                          testResults: '**/target/surefire-reports/*.xml'
+                    junit '**/target/surefire-reports/*.xml'
                 }
             }
         }
@@ -61,15 +59,9 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 15, unit: 'MINUTES') {
+                timeout(time: 10, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
                 }
-            }
-        }
-
-        stage('Package') {
-            steps {
-                sh 'mvn clean package -DskipTests'
             }
         }
 
@@ -77,9 +69,7 @@ pipeline {
             steps {
                 sh """
                 docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-
                 docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${DOCKERHUB_REPO}:${IMAGE_TAG}
-
                 docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${DOCKERHUB_REPO}:latest
                 """
             }
@@ -106,31 +96,31 @@ pipeline {
             }
         }
 
-        stage('Deploy') {
+        stage('Deploy with Docker Compose') {
             steps {
-
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'mysql-creds',
                         usernameVariable: 'MYSQL_USER',
                         passwordVariable: 'MYSQL_PASSWORD'
+                    ),
+                    string(
+                        credentialsId: 'mysql-root-pass',
+                        variable: 'MYSQL_ROOT_PASSWORD'
                     )
                 ]) {
-
                     sh '''
-                    docker stop ott-platform || true
-                    docker rm ott-platform || true
+                    echo "Stopping old containers..."
+                    docker-compose down || true
 
-                    docker pull $DOCKERHUB_REPO:latest
+                    echo "Setting environment variables..."
+                    export MYSQL_DATABASE=ott_db
+                    export MYSQL_USER=$MYSQL_USER
+                    export MYSQL_PASSWORD=$MYSQL_PASSWORD
+                    export MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
 
-                    docker run -d \
-                      --name ott-platform \
-                      --network ott_default \
-                      -p 8082:8082 \
-                      -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/$MYSQL_DATABASE \
-                      -e SPRING_DATASOURCE_USERNAME=$MYSQL_USER \
-                      -e SPRING_DATASOURCE_PASSWORD=$MYSQL_PASSWORD \
-                      $DOCKERHUB_REPO:latest
+                    echo "Starting containers..."
+                    docker-compose up -d --build
                     '''
                 }
             }
@@ -139,15 +129,15 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh '''
-                echo "Waiting for application..."
-                sleep 30
+                echo "Waiting for application to start..."
+                sleep 40
 
                 curl --fail http://localhost:8082/actuator/health
                 '''
             }
         }
 
-        stage('Docker Cleanup') {
+        stage('Cleanup') {
             steps {
                 sh '''
                 docker image prune -f
@@ -160,16 +150,12 @@ pipeline {
     post {
 
         success {
-            echo "===================================="
-            echo "BUILD SUCCESSFUL"
-            echo "===================================="
+            echo "=========== BUILD SUCCESS ==========="
             sh 'docker ps'
         }
 
         failure {
-            echo "===================================="
-            echo "BUILD FAILED"
-            echo "===================================="
+            echo "=========== BUILD FAILED ==========="
             sh 'docker ps -a'
         }
 
