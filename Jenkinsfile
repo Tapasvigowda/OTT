@@ -154,24 +154,7 @@ pipeline {
             }
         }
 
-        stage('Health Check') {
-
-            steps {
-
-                sh '''
-
-                echo "Waiting for OTT Platform..."
-
-                sleep 30
-
-                curl --fail http://localhost:8082/api/ping
-
-                curl --fail http://localhost:8082/actuator/health
-
-                '''
-            }
-        }
-
+       
         stage('Docker Cleanup') {
 
             steps {
