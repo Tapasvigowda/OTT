@@ -27,7 +27,7 @@ services:
 
   ott-platform:
 
-    image: daya9096/ott-platform:latest        # <-- change to your Docker Hub repo
+    image: tapasvigowda/ott-platform:latest        # <-- change to your Docker Hub repo
     container_name: ott-platform
 
     depends_on:
