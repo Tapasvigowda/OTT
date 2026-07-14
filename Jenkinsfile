@@ -10,7 +10,7 @@ pipeline {
     environment {
 
         IMAGE_NAME = "ott-platform"
-        DOCKERHUB_REPO = "daya9096/ott-platform"
+        DOCKERHUB_REPO = "tapasvigowda/ott-platform"
         IMAGE_TAG = "${BUILD_NUMBER}"
 
         MYSQL_DATABASE = "ott_db"
@@ -21,7 +21,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 git branch: 'main',
-                    url: 'https://github.com/daya9096/OTT.git'
+                    url: 'https://github.com/Tapasvigowda/OTT.git'
             }
         }
 
