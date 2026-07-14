@@ -111,7 +111,7 @@ pipeline {
                 ]) {
                     sh '''
                     echo "Stopping old containers..."
-                    docker-compose down || true
+                    docker compose down || true
 
                     echo "Setting environment variables..."
                     export MYSQL_DATABASE=ott_db
@@ -120,7 +120,7 @@ pipeline {
                     export MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
 
                     echo "Starting containers..."
-                    docker-compose up -d --build
+                    docker compose up -d --build
                     '''
                 }
             }
