@@ -1,82 +1,136 @@
 pipeline {
+
     agent any
 
+    tools {
+        maven 'Maven3'
+        jdk 'JDK17'
+    }
+
     environment {
-        IMAGE_NAME = "tapasvigowda/ott-platform:latest"
-        CONTAINER_NAME = "ott-platform"
-        NETWORK = "ott_default"
-        DB_HOST = "mysql"
-        DB_NAME = "ott_db"
-        DB_USER = "ottuser"
+        IMAGE_NAME = "ott-platform"
+        DOCKERHUB_REPO = "tapasvigowda/ott-platform"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+
+        MYSQL_DATABASE = "ott_db"
     }
 
     stages {
 
-        stage('Cleanup Old Container') {
+        stage('Checkout') {
             steps {
-                sh '''
-                docker rm -f $CONTAINER_NAME || true
-                '''
+                git branch: 'main',
+                    url: 'https://github.com/Tapasvigowda/OTT.git'
             }
         }
 
-        stage('Pull Image') {
+        stage('Compile') {
             steps {
-                sh '''
-                docker pull $IMAGE_NAME
-                '''
+                sh 'mvn clean compile'
             }
         }
 
-        stage('Start MySQL (if not running)') {
+        stage('Unit Test') {
             steps {
-                script {
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true,
+                          testResults: '**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    withCredentials([
+                        string(credentialsId: 'sonar', variable: 'SONAR_TOKEN')
+                    ]) {
+                        sh '''
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=ott-platform \
+                        -Dsonar.projectName="OTT Platform" \
+                        -Dsonar.token=$SONAR_TOKEN
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 15, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+
+                docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${DOCKERHUB_REPO}:${IMAGE_TAG}
+
+                docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${DOCKERHUB_REPO}:latest
+                """
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
                     sh '''
-                    if [ "$(docker ps -q -f name=mysql)" ]; then
-                        echo "MySQL already running"
-                    else
-                        echo "Starting MySQL..."
-                        docker rm -f mysql || true
+                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
 
-                        docker run -d \
-                          --name mysql \
-                          --network $NETWORK \
-                          -e MYSQL_ROOT_PASSWORD=root \
-                          -e MYSQL_DATABASE=$DB_NAME \
-                          -e MYSQL_USER=$DB_USER \
-                          -e MYSQL_PASSWORD=$MYSQL_PASSWORD \
-                          -p 3306:3306 \
-                          mysql:8.0
-                    fi
+                    docker push $DOCKERHUB_REPO:$IMAGE_TAG
+                    docker push $DOCKERHUB_REPO:latest
+
+                    docker logout
                     '''
                 }
             }
         }
 
-        stage('Wait for MySQL') {
+        stage('Deploy') {
             steps {
-                sh '''
-                echo "Waiting for MySQL to be ready..."
-                until docker exec mysql mysqladmin ping -h "localhost" --silent; do
-                  sleep 5
-                done
-                echo "MySQL is ready"
-                '''
-            }
-        }
 
-        stage('Deploy Application') {
-            steps {
-                withCredentials([string(credentialsId: 'mysql-password', variable: 'MYSQL_PASSWORD')]) {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'mysql-creds',
+                        usernameVariable: 'MYSQL_USER',
+                        passwordVariable: 'MYSQL_PASSWORD'
+                    )
+                ]) {
+
                     sh '''
+                    docker stop ott-platform || true
+                    docker rm ott-platform || true
+
+                    docker pull $DOCKERHUB_REPO:latest
+
                     docker run -d \
-                      --name $CONTAINER_NAME \
-                      --network $NETWORK \
+                      --name ott-platform \
+                      --network ott_default \
                       -p 8082:8082 \
-                      -e SPRING_DATASOURCE_URL=jdbc:mysql://$DB_HOST:3306/$DB_NAME \
-                      -e SPRING_DATASOURCE_USERNAME=$DB_USER \
+                      -e SPRING_DATASOURCE_URL=jdbc:mysql://mysql:3306/$MYSQL_DATABASE \
+                      -e SPRING_DATASOURCE_USERNAME=$MYSQL_USER \
                       -e SPRING_DATASOURCE_PASSWORD=$MYSQL_PASSWORD \
-                      $IMAGE_NAME
+                      $DOCKERHUB_REPO:latest
                     '''
                 }
             }
@@ -85,36 +139,42 @@ pipeline {
         stage('Health Check') {
             steps {
                 sh '''
-                echo "Checking application health..."
+                echo "Waiting for application..."
+                sleep 30
 
-                for i in {1..10}; do
-                  if curl -s http://localhost:8082/actuator/health | grep UP; then
-                    echo "Application is UP"
-                    exit 0
-                  fi
-                  echo "Waiting for app..."
-                  sleep 10
-                done
+                curl --fail http://localhost:8082/actuator/health
+                '''
+            }
+        }
 
-                echo "Application failed to start"
-                docker logs $CONTAINER_NAME
-                exit 1
+        stage('Docker Cleanup') {
+            steps {
+                sh '''
+                docker image prune -f
+                docker system df
                 '''
             }
         }
     }
 
     post {
+
         success {
-            echo "=========================="
-            echo "BUILD SUCCESS"
-            echo "=========================="
+            echo "===================================="
+            echo "BUILD SUCCESSFUL"
+            echo "===================================="
+            sh 'docker ps'
         }
+
         failure {
-            echo "=========================="
+            echo "===================================="
             echo "BUILD FAILED"
-            echo "=========================="
-            sh 'docker logs ott-platform || true'
+            echo "===================================="
+            sh 'docker ps -a'
+        }
+
+        always {
+            cleanWs()
         }
     }
 }
